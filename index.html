@@ -801,14 +801,24 @@
     });
   }
   
+  // Функция проверки email с таймаутом 1 минута
   async function checkEmailInSheet(email) {
     try {
       await initGapi();
       
-      const response = await gapi.client.sheets.spreadsheets.values.get({
+      // Создаем Promise с таймаутом на 1 минуту
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout: проверка email заняла больше 1 минуты')), 60000);
+      });
+      
+      // Основной запрос к Sheets API
+      const requestPromise = gapi.client.sheets.spreadsheets.values.get({
         spreadsheetId: AUTH_SPREADSHEET_ID,
         range: `${AUTH_SHEET_NAME}!A:C`,
       });
+      
+      // Гонка между запросом и таймаутом
+      const response = await Promise.race([requestPromise, timeoutPromise]);
       
       const rows = response.result.values;
       if (!rows || rows.length === 0) return { found: false };
@@ -825,6 +835,10 @@
       return { found: false };
     } catch (error) {
       console.error('Sheets API error:', error);
+      // Если ошибка таймаута - возвращаем специальный статус
+      if (error.message && error.message.includes('Timeout')) {
+        return { found: false, error: true, timeout: true };
+      }
       return { found: false, error: true };
     }
   }
@@ -885,6 +899,14 @@
       console.log('Checking email:', email);
       
       const checkResult = await checkEmailInSheet(email);
+      
+      // Обработка таймаута
+      if (checkResult.timeout) {
+        showLoadingOverlay(false);
+        alert('Превышено время ожидания при проверке email (1 минута). Пожалуйста, попробуйте снова.');
+        document.getElementById('loginScreen').style.display = 'flex';
+        return;
+      }
       
       if (checkResult.found) {
         currentUser = {
