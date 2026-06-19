@@ -658,6 +658,7 @@
 </head>
 <body>
 
+<!-- ЭКРАН ВХОДА ВСЕГДА ВИДИМ ИЗНАЧАЛЬНО -->
 <div id="loginScreen" class="login-screen">
   <div class="login-button-wrapper">
     <div id="g_id_onload" 
@@ -676,6 +677,7 @@
   </div>
 </div>
 
+<!-- ОСНОВНОЙ КОНТЕНТ СКРЫТ ИЗНАЧАЛЬНО -->
 <div id="mainContent" style="display: none;">
   <div class="table-container">
     <div class="table-wrapper">
@@ -801,7 +803,7 @@
     try {
       await initGapi();
       
-      // Таймаут только при первой авторизации
+      // Таймаут ТОЛЬКО при первой авторизации
       let timeoutPromise = null;
       if (isFirstAuth) {
         timeoutPromise = new Promise((_, reject) => {
@@ -940,7 +942,7 @@
     }
   };
   
-  // ==================== ПРОВЕРКА СЕССИИ ПРИ ЗАГРУЗКЕ (БЕЗ ТАЙМАУТА) ====================
+  // ==================== ПРОВЕРКА СЕССИИ (БЕЗ ТАЙМАУТА) ====================
   async function validateSession() {
     const savedUser = getUserFromStorage();
     if (!savedUser || !savedUser.email) {
@@ -948,11 +950,10 @@
     }
     
     try {
-      // При проверке сессии - БЕЗ таймаута (ждем сколько нужно)
+      // При проверке сессии - БЕЗ таймаута
       const checkResult = await checkEmailInSheet(savedUser.email, false);
       
       if (checkResult.found) {
-        // Обновляем данные пользователя (могли измениться имя или роль)
         currentUser = {
           ...savedUser,
           name: checkResult.name || savedUser.name,
@@ -961,33 +962,21 @@
         saveUserToStorage(currentUser);
         return true;
       } else if (checkResult.error) {
-        // Если ошибка при проверке сессии - НЕ выкидываем, а пропускаем
-        // Пользователь остается в системе (сессия считается валидной)
+        // При ошибке - НЕ выкидываем, оставляем сессию
         console.warn('Session validation error, keeping session:', checkResult.message);
         currentUser = savedUser;
         return true;
       } else {
-        // Email больше не в таблице - очищаем сессию
+        // Email удален из таблицы
         clearStoredSession();
         currentUser = null;
         return false;
       }
     } catch (error) {
       console.error('Session validation error:', error);
-      // При любой ошибке проверки - НЕ выкидываем пользователя
-      // Оставляем сессию активной
       currentUser = savedUser;
       return true;
     }
-  }
-  
-  function tryRestoreSession() {
-    const savedUser = getUserFromStorage();
-    if (savedUser && savedUser.email) {
-      currentUser = savedUser;
-      return true;
-    }
-    return false;
   }
   
   // ==================== ОСНОВНАЯ ЛОГИКА БРОНИРОВАНИЯ ====================
@@ -1150,16 +1139,20 @@
   
   window.closeImagePopup = function() { document.getElementById("imagePopup").style.display = "none"; }
   
-  // ==================== ЗАПУСК С ВАЛИДАЦИЕЙ СЕССИИ (БЕЗ ТАЙМАУТА) ====================
+  // ==================== ЗАПУСК: СНАЧАЛА ПОКАЗЫВАЕМ ЭКРАН ВХОДА, ПОТОМ ПРОВЕРЯЕМ ====================
   (async function init() {
-    // Сначала проверяем, есть ли сохраненная сессия
-    if (tryRestoreSession()) {
-      // Если есть - валидируем ее (проверяем, что email все еще в таблице)
-      // Валидация выполняется БЕЗ таймаута
+    // Показываем экран входа (он и так виден по умолчанию)
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('mainContent').style.display = 'none';
+    
+    // Проверяем сохраненную сессию
+    const savedUser = getUserFromStorage();
+    if (savedUser && savedUser.email) {
+      // Валидируем сессию (без таймаута)
       const isValid = await validateSession();
       
       if (isValid) {
-        // Сессия валидна - показываем основное содержимое
+        // Сессия валидна - показываем основной контент
         document.getElementById('loginScreen').style.display = 'none';
         document.getElementById('mainContent').style.display = 'block';
         
@@ -1169,17 +1162,10 @@
         }
         
         initAppAfterAuth();
-      } else {
-        // Сессия невалидна (email удален) - показываем экран входа
-        document.getElementById('loginScreen').style.display = 'flex';
-        document.getElementById('mainContent').style.display = 'none';
-        currentUser = null;
       }
-    } else {
-      // Нет сохраненной сессии - показываем экран входа
-      document.getElementById('loginScreen').style.display = 'flex';
-      document.getElementById('mainContent').style.display = 'none';
+      // Если невалидна - экран входа уже показан
     }
+    // Если нет сохраненной сессии - экран входа уже показан
   })();
   
   const faLink = document.createElement('link');
