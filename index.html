@@ -140,7 +140,6 @@
       text-shadow: 0 1px 2px rgba(0,0,0,0.3);
     }
 
-    /* Цветные подложки для заголовков столов */
     thead th:nth-child(1) { background: #3b82f6 !important; }
     thead th:nth-child(2) { background: #3b82f6 !important; }
     thead th:nth-child(3) { background: #3b82f6 !important; }
@@ -798,20 +797,29 @@
     });
   }
   
-  async function checkEmailInSheet(email) {
+  async function checkEmailInSheet(email, isFirstAuth = false) {
     try {
       await initGapi();
       
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('TIMEOUT: Проверка email заняла больше 60 секунд')), 60000);
-      });
+      // Таймаут только при первой авторизации
+      let timeoutPromise = null;
+      if (isFirstAuth) {
+        timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('TIMEOUT: Проверка email заняла больше 60 секунд')), 60000);
+        });
+      }
       
       const apiPromise = gapi.client.sheets.spreadsheets.values.get({
         spreadsheetId: AUTH_SPREADSHEET_ID,
         range: `${AUTH_SHEET_NAME}!A:C`,
       });
       
-      const response = await Promise.race([apiPromise, timeoutPromise]);
+      let response;
+      if (isFirstAuth) {
+        response = await Promise.race([apiPromise, timeoutPromise]);
+      } else {
+        response = await apiPromise;
+      }
       
       const rows = response.result.values;
       if (!rows || rows.length === 0) return { found: false };
@@ -885,9 +893,10 @@
       const payload = parseJwt(response.credential);
       const email = payload.email.toLowerCase().trim();
       
-      console.log('Checking email:', email);
+      console.log('Checking email (first auth):', email);
       
-      const checkResult = await checkEmailInSheet(email);
+      // При первой авторизации - таймаут 60 секунд
+      const checkResult = await checkEmailInSheet(email, true);
       
       if (checkResult.error) {
         showLoadingOverlay(false);
@@ -931,7 +940,7 @@
     }
   };
   
-  // ==================== НОВАЯ ФУНКЦИЯ: ПРОВЕРКА СЕССИИ ПРИ ЗАГРУЗКЕ ====================
+  // ==================== ПРОВЕРКА СЕССИИ ПРИ ЗАГРУЗКЕ (БЕЗ ТАЙМАУТА) ====================
   async function validateSession() {
     const savedUser = getUserFromStorage();
     if (!savedUser || !savedUser.email) {
@@ -939,9 +948,8 @@
     }
     
     try {
-      showLoadingOverlay(true);
-      const checkResult = await checkEmailInSheet(savedUser.email);
-      showLoadingOverlay(false);
+      // При проверке сессии - БЕЗ таймаута (ждем сколько нужно)
+      const checkResult = await checkEmailInSheet(savedUser.email, false);
       
       if (checkResult.found) {
         // Обновляем данные пользователя (могли измениться имя или роль)
@@ -952,6 +960,12 @@
         };
         saveUserToStorage(currentUser);
         return true;
+      } else if (checkResult.error) {
+        // Если ошибка при проверке сессии - НЕ выкидываем, а пропускаем
+        // Пользователь остается в системе (сессия считается валидной)
+        console.warn('Session validation error, keeping session:', checkResult.message);
+        currentUser = savedUser;
+        return true;
       } else {
         // Email больше не в таблице - очищаем сессию
         clearStoredSession();
@@ -960,16 +974,14 @@
       }
     } catch (error) {
       console.error('Session validation error:', error);
-      showLoadingOverlay(false);
-      // При ошибке проверки - лучше перестраховаться и запросить повторную авторизацию
-      clearStoredSession();
-      currentUser = null;
-      return false;
+      // При любой ошибке проверки - НЕ выкидываем пользователя
+      // Оставляем сессию активной
+      currentUser = savedUser;
+      return true;
     }
   }
   
   function tryRestoreSession() {
-    // Теперь просто проверяем наличие сохраненной сессии в localStorage
     const savedUser = getUserFromStorage();
     if (savedUser && savedUser.email) {
       currentUser = savedUser;
@@ -1138,11 +1150,12 @@
   
   window.closeImagePopup = function() { document.getElementById("imagePopup").style.display = "none"; }
   
-  // ==================== ЗАПУСК С ВАЛИДАЦИЕЙ СЕССИИ ====================
+  // ==================== ЗАПУСК С ВАЛИДАЦИЕЙ СЕССИИ (БЕЗ ТАЙМАУТА) ====================
   (async function init() {
     // Сначала проверяем, есть ли сохраненная сессия
     if (tryRestoreSession()) {
       // Если есть - валидируем ее (проверяем, что email все еще в таблице)
+      // Валидация выполняется БЕЗ таймаута
       const isValid = await validateSession();
       
       if (isValid) {
@@ -1157,10 +1170,9 @@
         
         initAppAfterAuth();
       } else {
-        // Сессия невалидна - показываем экран входа
+        // Сессия невалидна (email удален) - показываем экран входа
         document.getElementById('loginScreen').style.display = 'flex';
         document.getElementById('mainContent').style.display = 'none';
-        // Если был текущий пользователь - очищаем
         currentUser = null;
       }
     } else {
