@@ -801,24 +801,22 @@
     });
   }
   
-  // Функция проверки email с таймаутом 1 минута
   async function checkEmailInSheet(email) {
     try {
       await initGapi();
       
-      // Создаем Promise с таймаутом на 1 минуту
+      // Создаем Promise с таймаутом 60 секунд
       const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Timeout: проверка email заняла больше 1 минуты')), 60000);
+        setTimeout(() => reject(new Error('TIMEOUT: Проверка email заняла больше 60 секунд')), 60000);
       });
       
-      // Основной запрос к Sheets API
-      const requestPromise = gapi.client.sheets.spreadsheets.values.get({
+      const apiPromise = gapi.client.sheets.spreadsheets.values.get({
         spreadsheetId: AUTH_SPREADSHEET_ID,
         range: `${AUTH_SHEET_NAME}!A:C`,
       });
       
-      // Гонка между запросом и таймаутом
-      const response = await Promise.race([requestPromise, timeoutPromise]);
+      // Гонка между API запросом и таймаутом
+      const response = await Promise.race([apiPromise, timeoutPromise]);
       
       const rows = response.result.values;
       if (!rows || rows.length === 0) return { found: false };
@@ -835,11 +833,8 @@
       return { found: false };
     } catch (error) {
       console.error('Sheets API error:', error);
-      // Если ошибка таймаута - возвращаем специальный статус
-      if (error.message && error.message.includes('Timeout')) {
-        return { found: false, error: true, timeout: true };
-      }
-      return { found: false, error: true };
+      // Если ошибка таймаута или другая - возвращаем ошибку
+      return { found: false, error: true, message: error.message };
     }
   }
   
@@ -900,10 +895,14 @@
       
       const checkResult = await checkEmailInSheet(email);
       
-      // Обработка таймаута
-      if (checkResult.timeout) {
+      // Проверяем, была ли ошибка таймаута или другая ошибка
+      if (checkResult.error) {
         showLoadingOverlay(false);
-        alert('Превышено время ожидания при проверке email (1 минута). Пожалуйста, попробуйте снова.');
+        if (checkResult.message && checkResult.message.includes('TIMEOUT')) {
+          alert('Превышено время ожидания проверки email (60 секунд). Пожалуйста, попробуйте авторизоваться позже.');
+        } else {
+          alert('Ошибка при проверке email. Пожалуйста, попробуйте позже.');
+        }
         document.getElementById('loginScreen').style.display = 'flex';
         return;
       }
