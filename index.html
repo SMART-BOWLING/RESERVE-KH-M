@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+ <!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
@@ -657,14 +657,6 @@
     .logout-like-tables-btn:active {
       transform: scale(0.98);
     }
-    
-    /* Стили для таймера автоматического выхода */
-    .auto-logout-timer {
-      color: #fbbf24;
-      font-size: 12px;
-      margin-left: 8px;
-      font-weight: normal;
-    }
   </style>
 </head>
 <body>
@@ -766,13 +758,7 @@
   
   const STORAGE_USER_KEY = 'billiard_user_data';
   const STORAGE_EXPIRY_KEY = 'billiard_user_expiry';
-  const SESSION_DURATION_DAYS = 7;
-  
-  // Переменные для автоматического выхода
-  let autoLogoutTimer = null;
-  let autoLogoutCheckInterval = null;
-  const AUTO_LOGOUT_CHECK_INTERVAL_MS = 60000; // 1 минута
-  let isAutoLogoutInProgress = false;
+  const SESSION_DURATION_DAYS = 1;
   
   function parseJwt(token) {
     try {
@@ -880,9 +866,6 @@
   }
   
   function logout() {
-    // Останавливаем автоматическую проверку
-    stopAutoLogoutCheck();
-    
     if (confirm('Вы уверены, что хотите выйти из системы?')) {
       clearStoredSession();
       currentUser = null;
@@ -890,64 +873,68 @@
       document.getElementById('loginScreen').style.display = 'flex';
       for(let l in intervalsByLane) intervalsByLane[l] = [];
       if (typeof updateTableSelection === 'function') updateTableSelection();
-    } else {
-      // Если пользователь отменил выход, перезапускаем проверку
-      startAutoLogoutCheck();
     }
   }
   
-  // ==================== АВТОМАТИЧЕСКИЙ ВЫХОД ====================
-  function startAutoLogoutCheck() {
-    // Останавливаем предыдущие таймеры
-    stopAutoLogoutCheck();
-    
-    if (!currentUser || !currentUser.email) return;
-    
-    console.log('Запущена автоматическая проверка email в листе (интервал: 1 минута)');
-    
-    // Запускаем периодическую проверку
-    autoLogoutCheckInterval = setInterval(async () => {
-      if (isAutoLogoutInProgress) return;
-      if (!currentUser || !currentUser.email) {
-        stopAutoLogoutCheck();
-        return;
-      }
+  window.handleCredentialResponse = async function(response) {
+    try {
+      showLoadingOverlay(true);
+      const payload = parseJwt(response.credential);
+      const email = payload.email.toLowerCase().trim();
       
-      isAutoLogoutInProgress = true;
+      console.log('Checking email:', email);
       
-      try {
-        const emailToCheck = currentUser.email.toLowerCase().trim();
-        const checkResult = await checkEmailInSheet(emailToCheck);
+      const checkResult = await checkEmailInSheet(email);
+      
+      if (checkResult.found) {
+        currentUser = {
+          email: email,
+          name: checkResult.name || payload.name,
+          role: checkResult.role || '',
+          picture: payload.picture
+        };
+        saveUserToStorage(currentUser);
         
-        if (!checkResult.found) {
-          console.log(`Email ${emailToCheck} не найден в листе авторизации. Выполняется выход...`);
-          
-          // Показываем уведомление пользователю
-          alert('Ваш email был удален из списка авторизации. Доступ закрыт.');
-          
-          // Выполняем выход
-          stopAutoLogoutCheck();
-          clearStoredSession();
-          currentUser = null;
-          document.getElementById('mainContent').style.display = 'none';
-          document.getElementById('loginScreen').style.display = 'flex';
-          for(let l in intervalsByLane) intervalsByLane[l] = [];
-          if (typeof updateTableSelection === 'function') updateTableSelection();
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mainContent').style.display = 'block';
+        showLoadingOverlay(false);
+        
+        const logoutBtn = document.getElementById('logoutButtonHeader');
+        if (logoutBtn) {
+          logoutBtn.onclick = logout;
         }
-      } catch (error) {
-        console.error('Ошибка при проверке email:', error);
-      } finally {
-        isAutoLogoutInProgress = false;
+        
+        initAppAfterAuth();
+      } else {
+        showLoadingOverlay(false);
+        alert('Доступ запрещен: Ваш email не найден в списке разрешенных');
+        document.getElementById('loginScreen').style.display = 'flex';
       }
-    }, AUTO_LOGOUT_CHECK_INTERVAL_MS);
-  }
-  
-  function stopAutoLogoutCheck() {
-    if (autoLogoutCheckInterval) {
-      clearInterval(autoLogoutCheckInterval);
-      autoLogoutCheckInterval = null;
+    } catch (e) {
+      console.error("Error:", e);
+      showLoadingOverlay(false);
+      alert('Ошибка аутентификации');
     }
-    isAutoLogoutInProgress = false;
+  };
+  
+  function tryRestoreSession() {
+    const savedUser = getUserFromStorage();
+    if (savedUser && savedUser.email) {
+      currentUser = savedUser;
+      document.getElementById('loginScreen').style.display = 'none';
+      document.getElementById('mainContent').style.display = 'block';
+      
+      const logoutBtn = document.getElementById('logoutButtonHeader');
+      if (logoutBtn) {
+        logoutBtn.onclick = logout;
+      }
+      
+      setTimeout(() => {
+        initAppAfterAuth();
+      }, 100);
+      return true;
+    }
+    return false;
   }
   
   // ==================== ОСНОВНАЯ ЛОГИКА БРОНИРОВАНИЯ ====================
@@ -1109,21 +1096,12 @@
     loadExisting(); 
     updateTableSelection(); 
     updateMarkersWidth();
-    // Запускаем автоматическую проверку email
-    startAutoLogoutCheck();
   }
   
   window.closeImagePopup = function() { document.getElementById("imagePopup").style.display = "none"; }
   
   if (!tryRestoreSession()) {
     document.getElementById('loginScreen').style.display = 'flex';
-  } else {
-    // Если сессия восстановлена, запускаем проверку
-    setTimeout(() => {
-      if (currentUser) {
-        startAutoLogoutCheck();
-      }
-    }, 500);
   }
   
   const faLink = document.createElement('link');
