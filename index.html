@@ -140,19 +140,21 @@
       text-shadow: 0 1px 2px rgba(0,0,0,0.3);
     }
 
-    thead th:nth-child(1) { background: #3b82f6 !important; }
+    /* Цветные подложки для заголовков столов */
+    thead th:nth-child(1) { background: #3b82f6 !important; } /* синий */
     thead th:nth-child(2) { background: #3b82f6 !important; }
     thead th:nth-child(3) { background: #3b82f6 !important; }
-    thead th:nth-child(4) { background: #22c55e !important; }
+    thead th:nth-child(4) { background: #22c55e !important; } /* зелёный */
     thead th:nth-child(5) { background: #3b82f6 !important; }
     thead th:nth-child(6) { background: #3b82f6 !important; }
-    thead th:nth-child(7) { background: #ef4444 !important; }
+    thead th:nth-child(7) { background: #ef4444 !important; } /* красный */
     thead th:nth-child(8) { background: #ef4444 !important; }
     thead th:nth-child(9) { background: #ef4444 !important; }
     thead th:nth-child(10) { background: #ef4444 !important; }
     thead th:nth-child(11) { background: #ef4444 !important; }
     thead th:nth-child(12) { background: #ef4444 !important; }
 
+    /* Сброс для time-col */
     thead th.time-col {
       background: #1a2f40 !important;
       text-shadow: none;
@@ -219,6 +221,7 @@
       color: white;
     }
 
+    /* Маркеры полностью скрыты */
     .column-markers {
       display: none;
     }
@@ -654,11 +657,18 @@
     .logout-like-tables-btn:active {
       transform: scale(0.98);
     }
+    
+    /* Стили для таймера автоматического выхода */
+    .auto-logout-timer {
+      color: #fbbf24;
+      font-size: 12px;
+      margin-left: 8px;
+      font-weight: normal;
+    }
   </style>
 </head>
 <body>
 
-<!-- ЭКРАН ВХОДА ВСЕГДА ВИДИМ ИЗНАЧАЛЬНО -->
 <div id="loginScreen" class="login-screen">
   <div class="login-button-wrapper">
     <div id="g_id_onload" 
@@ -677,7 +687,6 @@
   </div>
 </div>
 
-<!-- ОСНОВНОЙ КОНТЕНТ СКРЫТ ИЗНАЧАЛЬНО -->
 <div id="mainContent" style="display: none;">
   <div class="table-container">
     <div class="table-wrapper">
@@ -694,6 +703,7 @@
         <tbody id="tableBody"></tbody>
       </table>
       
+      <!-- Маркеры удалены -->
       <div id="columnMarkers" class="column-markers"></div>
     </div>
     <div id="slidersContainer"></div>
@@ -758,6 +768,12 @@
   const STORAGE_EXPIRY_KEY = 'billiard_user_expiry';
   const SESSION_DURATION_DAYS = 7;
   
+  // Переменные для автоматического выхода
+  let autoLogoutTimer = null;
+  let autoLogoutCheckInterval = null;
+  const AUTO_LOGOUT_CHECK_INTERVAL_MS = 60000; // 1 минута
+  let isAutoLogoutInProgress = false;
+  
   function parseJwt(token) {
     try {
       const base64Url = token.split('.')[1];
@@ -799,29 +815,14 @@
     });
   }
   
-  async function checkEmailInSheet(email, isFirstAuth = false) {
+  async function checkEmailInSheet(email) {
     try {
       await initGapi();
       
-      // Таймаут ТОЛЬКО при первой авторизации
-      let timeoutPromise = null;
-      if (isFirstAuth) {
-        timeoutPromise = new Promise((_, reject) => {
-          setTimeout(() => reject(new Error('TIMEOUT: Проверка email заняла больше 60 секунд')), 60000);
-        });
-      }
-      
-      const apiPromise = gapi.client.sheets.spreadsheets.values.get({
+      const response = await gapi.client.sheets.spreadsheets.values.get({
         spreadsheetId: AUTH_SPREADSHEET_ID,
         range: `${AUTH_SHEET_NAME}!A:C`,
       });
-      
-      let response;
-      if (isFirstAuth) {
-        response = await Promise.race([apiPromise, timeoutPromise]);
-      } else {
-        response = await apiPromise;
-      }
       
       const rows = response.result.values;
       if (!rows || rows.length === 0) return { found: false };
@@ -838,7 +839,7 @@
       return { found: false };
     } catch (error) {
       console.error('Sheets API error:', error);
-      return { found: false, error: true, message: error.message };
+      return { found: false, error: true };
     }
   }
   
@@ -879,6 +880,9 @@
   }
   
   function logout() {
+    // Останавливаем автоматическую проверку
+    stopAutoLogoutCheck();
+    
     if (confirm('Вы уверены, что хотите выйти из системы?')) {
       clearStoredSession();
       currentUser = null;
@@ -886,97 +890,64 @@
       document.getElementById('loginScreen').style.display = 'flex';
       for(let l in intervalsByLane) intervalsByLane[l] = [];
       if (typeof updateTableSelection === 'function') updateTableSelection();
+    } else {
+      // Если пользователь отменил выход, перезапускаем проверку
+      startAutoLogoutCheck();
     }
   }
   
-  window.handleCredentialResponse = async function(response) {
-    try {
-      showLoadingOverlay(true);
-      const payload = parseJwt(response.credential);
-      const email = payload.email.toLowerCase().trim();
-      
-      console.log('Checking email (first auth):', email);
-      
-      // При первой авторизации - таймаут 60 секунд
-      const checkResult = await checkEmailInSheet(email, true);
-      
-      if (checkResult.error) {
-        showLoadingOverlay(false);
-        if (checkResult.message && checkResult.message.includes('TIMEOUT')) {
-          alert('Превышено время ожидания проверки email (60 секунд). Пожалуйста, попробуйте авторизоваться позже.');
-        } else {
-          alert('Ошибка при проверке email. Пожалуйста, попробуйте позже.');
-        }
-        document.getElementById('loginScreen').style.display = 'flex';
+  // ==================== АВТОМАТИЧЕСКИЙ ВЫХОД ====================
+  function startAutoLogoutCheck() {
+    // Останавливаем предыдущие таймеры
+    stopAutoLogoutCheck();
+    
+    if (!currentUser || !currentUser.email) return;
+    
+    console.log('Запущена автоматическая проверка email в листе (интервал: 1 минута)');
+    
+    // Запускаем периодическую проверку
+    autoLogoutCheckInterval = setInterval(async () => {
+      if (isAutoLogoutInProgress) return;
+      if (!currentUser || !currentUser.email) {
+        stopAutoLogoutCheck();
         return;
       }
       
-      if (checkResult.found) {
-        currentUser = {
-          email: email,
-          name: checkResult.name || payload.name,
-          role: checkResult.role || '',
-          picture: payload.picture
-        };
-        saveUserToStorage(currentUser);
-        
-        document.getElementById('loginScreen').style.display = 'none';
-        document.getElementById('mainContent').style.display = 'block';
-        showLoadingOverlay(false);
-        
-        const logoutBtn = document.getElementById('logoutButtonHeader');
-        if (logoutBtn) {
-          logoutBtn.onclick = logout;
-        }
-        
-        initAppAfterAuth();
-      } else {
-        showLoadingOverlay(false);
-        alert('Доступ запрещен: Ваш email не найден в списке разрешенных');
-        document.getElementById('loginScreen').style.display = 'flex';
-      }
-    } catch (e) {
-      console.error("Error:", e);
-      showLoadingOverlay(false);
-      alert('Ошибка аутентификации');
-    }
-  };
-  
-  // ==================== ПРОВЕРКА СЕССИИ (БЕЗ ТАЙМАУТА) ====================
-  async function validateSession() {
-    const savedUser = getUserFromStorage();
-    if (!savedUser || !savedUser.email) {
-      return false;
-    }
-    
-    try {
-      // При проверке сессии - БЕЗ таймаута
-      const checkResult = await checkEmailInSheet(savedUser.email, false);
+      isAutoLogoutInProgress = true;
       
-      if (checkResult.found) {
-        currentUser = {
-          ...savedUser,
-          name: checkResult.name || savedUser.name,
-          role: checkResult.role || savedUser.role
-        };
-        saveUserToStorage(currentUser);
-        return true;
-      } else if (checkResult.error) {
-        // При ошибке - НЕ выкидываем, оставляем сессию
-        console.warn('Session validation error, keeping session:', checkResult.message);
-        currentUser = savedUser;
-        return true;
-      } else {
-        // Email удален из таблицы
-        clearStoredSession();
-        currentUser = null;
-        return false;
+      try {
+        const emailToCheck = currentUser.email.toLowerCase().trim();
+        const checkResult = await checkEmailInSheet(emailToCheck);
+        
+        if (!checkResult.found) {
+          console.log(`Email ${emailToCheck} не найден в листе авторизации. Выполняется выход...`);
+          
+          // Показываем уведомление пользователю
+          alert('Ваш email был удален из списка авторизации. Доступ закрыт.');
+          
+          // Выполняем выход
+          stopAutoLogoutCheck();
+          clearStoredSession();
+          currentUser = null;
+          document.getElementById('mainContent').style.display = 'none';
+          document.getElementById('loginScreen').style.display = 'flex';
+          for(let l in intervalsByLane) intervalsByLane[l] = [];
+          if (typeof updateTableSelection === 'function') updateTableSelection();
+        }
+      } catch (error) {
+        console.error('Ошибка при проверке email:', error);
+      } finally {
+        isAutoLogoutInProgress = false;
       }
-    } catch (error) {
-      console.error('Session validation error:', error);
-      currentUser = savedUser;
-      return true;
+    }, AUTO_LOGOUT_CHECK_INTERVAL_MS);
+  }
+  
+  function stopAutoLogoutCheck() {
+    if (autoLogoutCheckInterval) {
+      clearInterval(autoLogoutCheckInterval);
+      autoLogoutCheckInterval = null;
     }
+    isAutoLogoutInProgress = false;
   }
   
   // ==================== ОСНОВНАЯ ЛОГИКА БРОНИРОВАНИЯ ====================
@@ -1009,8 +980,10 @@
     tableBody.appendChild(row);
   });
 
+  // Функция обновления ширины маркеров больше не нужна
   function updateMarkersWidth() {}
 
+  // Контейнер маркеров очищен и скрыт через CSS
   const columnMarkers = document.getElementById("columnMarkers");
   columnMarkers.innerHTML = "";
 
@@ -1086,6 +1059,7 @@
       loadingOverlayEl.style.display='flex'; 
       slidersContainer.innerHTML=""; 
       
+      // Исправленный URL - используем только date
       const res = await fetch(GAS_URL+"?date="+dateInput.value); 
       const data = await res.json(); 
       
@@ -1135,38 +1109,22 @@
     loadExisting(); 
     updateTableSelection(); 
     updateMarkersWidth();
+    // Запускаем автоматическую проверку email
+    startAutoLogoutCheck();
   }
   
   window.closeImagePopup = function() { document.getElementById("imagePopup").style.display = "none"; }
   
-  // ==================== ЗАПУСК: СНАЧАЛА ПОКАЗЫВАЕМ ЭКРАН ВХОДА, ПОТОМ ПРОВЕРЯЕМ ====================
-  (async function init() {
-    // Показываем экран входа (он и так виден по умолчанию)
+  if (!tryRestoreSession()) {
     document.getElementById('loginScreen').style.display = 'flex';
-    document.getElementById('mainContent').style.display = 'none';
-    
-    // Проверяем сохраненную сессию
-    const savedUser = getUserFromStorage();
-    if (savedUser && savedUser.email) {
-      // Валидируем сессию (без таймаута)
-      const isValid = await validateSession();
-      
-      if (isValid) {
-        // Сессия валидна - показываем основной контент
-        document.getElementById('loginScreen').style.display = 'none';
-        document.getElementById('mainContent').style.display = 'block';
-        
-        const logoutBtn = document.getElementById('logoutButtonHeader');
-        if (logoutBtn) {
-          logoutBtn.onclick = logout;
-        }
-        
-        initAppAfterAuth();
+  } else {
+    // Если сессия восстановлена, запускаем проверку
+    setTimeout(() => {
+      if (currentUser) {
+        startAutoLogoutCheck();
       }
-      // Если невалидна - экран входа уже показан
-    }
-    // Если нет сохраненной сессии - экран входа уже показан
-  })();
+    }, 500);
+  }
   
   const faLink = document.createElement('link');
   faLink.rel = 'stylesheet';
