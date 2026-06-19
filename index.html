@@ -141,20 +141,19 @@
     }
 
     /* Цветные подложки для заголовков столов */
-    thead th:nth-child(1) { background: #3b82f6 !important; } /* синий */
+    thead th:nth-child(1) { background: #3b82f6 !important; }
     thead th:nth-child(2) { background: #3b82f6 !important; }
     thead th:nth-child(3) { background: #3b82f6 !important; }
-    thead th:nth-child(4) { background: #22c55e !important; } /* зелёный */
+    thead th:nth-child(4) { background: #22c55e !important; }
     thead th:nth-child(5) { background: #3b82f6 !important; }
     thead th:nth-child(6) { background: #3b82f6 !important; }
-    thead th:nth-child(7) { background: #ef4444 !important; } /* красный */
+    thead th:nth-child(7) { background: #ef4444 !important; }
     thead th:nth-child(8) { background: #ef4444 !important; }
     thead th:nth-child(9) { background: #ef4444 !important; }
     thead th:nth-child(10) { background: #ef4444 !important; }
     thead th:nth-child(11) { background: #ef4444 !important; }
     thead th:nth-child(12) { background: #ef4444 !important; }
 
-    /* Сброс для time-col */
     thead th.time-col {
       background: #1a2f40 !important;
       text-shadow: none;
@@ -221,7 +220,6 @@
       color: white;
     }
 
-    /* Маркеры полностью скрыты */
     .column-markers {
       display: none;
     }
@@ -695,7 +693,6 @@
         <tbody id="tableBody"></tbody>
       </table>
       
-      <!-- Маркеры удалены -->
       <div id="columnMarkers" class="column-markers"></div>
     </div>
     <div id="slidersContainer"></div>
@@ -805,7 +802,6 @@
     try {
       await initGapi();
       
-      // Создаем Promise с таймаутом 60 секунд
       const timeoutPromise = new Promise((_, reject) => {
         setTimeout(() => reject(new Error('TIMEOUT: Проверка email заняла больше 60 секунд')), 60000);
       });
@@ -815,7 +811,6 @@
         range: `${AUTH_SHEET_NAME}!A:C`,
       });
       
-      // Гонка между API запросом и таймаутом
       const response = await Promise.race([apiPromise, timeoutPromise]);
       
       const rows = response.result.values;
@@ -833,7 +828,6 @@
       return { found: false };
     } catch (error) {
       console.error('Sheets API error:', error);
-      // Если ошибка таймаута или другая - возвращаем ошибку
       return { found: false, error: true, message: error.message };
     }
   }
@@ -895,7 +889,6 @@
       
       const checkResult = await checkEmailInSheet(email);
       
-      // Проверяем, была ли ошибка таймаута или другая ошибка
       if (checkResult.error) {
         showLoadingOverlay(false);
         if (checkResult.message && checkResult.message.includes('TIMEOUT')) {
@@ -938,21 +931,48 @@
     }
   };
   
+  // ==================== НОВАЯ ФУНКЦИЯ: ПРОВЕРКА СЕССИИ ПРИ ЗАГРУЗКЕ ====================
+  async function validateSession() {
+    const savedUser = getUserFromStorage();
+    if (!savedUser || !savedUser.email) {
+      return false;
+    }
+    
+    try {
+      showLoadingOverlay(true);
+      const checkResult = await checkEmailInSheet(savedUser.email);
+      showLoadingOverlay(false);
+      
+      if (checkResult.found) {
+        // Обновляем данные пользователя (могли измениться имя или роль)
+        currentUser = {
+          ...savedUser,
+          name: checkResult.name || savedUser.name,
+          role: checkResult.role || savedUser.role
+        };
+        saveUserToStorage(currentUser);
+        return true;
+      } else {
+        // Email больше не в таблице - очищаем сессию
+        clearStoredSession();
+        currentUser = null;
+        return false;
+      }
+    } catch (error) {
+      console.error('Session validation error:', error);
+      showLoadingOverlay(false);
+      // При ошибке проверки - лучше перестраховаться и запросить повторную авторизацию
+      clearStoredSession();
+      currentUser = null;
+      return false;
+    }
+  }
+  
   function tryRestoreSession() {
+    // Теперь просто проверяем наличие сохраненной сессии в localStorage
     const savedUser = getUserFromStorage();
     if (savedUser && savedUser.email) {
       currentUser = savedUser;
-      document.getElementById('loginScreen').style.display = 'none';
-      document.getElementById('mainContent').style.display = 'block';
-      
-      const logoutBtn = document.getElementById('logoutButtonHeader');
-      if (logoutBtn) {
-        logoutBtn.onclick = logout;
-      }
-      
-      setTimeout(() => {
-        initAppAfterAuth();
-      }, 100);
       return true;
     }
     return false;
@@ -988,10 +1008,8 @@
     tableBody.appendChild(row);
   });
 
-  // Функция обновления ширины маркеров больше не нужна
   function updateMarkersWidth() {}
 
-  // Контейнер маркеров очищен и скрыт через CSS
   const columnMarkers = document.getElementById("columnMarkers");
   columnMarkers.innerHTML = "";
 
@@ -1067,7 +1085,6 @@
       loadingOverlayEl.style.display='flex'; 
       slidersContainer.innerHTML=""; 
       
-      // Исправленный URL - используем только date
       const res = await fetch(GAS_URL+"?date="+dateInput.value); 
       const data = await res.json(); 
       
@@ -1121,9 +1138,37 @@
   
   window.closeImagePopup = function() { document.getElementById("imagePopup").style.display = "none"; }
   
-  if (!tryRestoreSession()) {
-    document.getElementById('loginScreen').style.display = 'flex';
-  }
+  // ==================== ЗАПУСК С ВАЛИДАЦИЕЙ СЕССИИ ====================
+  (async function init() {
+    // Сначала проверяем, есть ли сохраненная сессия
+    if (tryRestoreSession()) {
+      // Если есть - валидируем ее (проверяем, что email все еще в таблице)
+      const isValid = await validateSession();
+      
+      if (isValid) {
+        // Сессия валидна - показываем основное содержимое
+        document.getElementById('loginScreen').style.display = 'none';
+        document.getElementById('mainContent').style.display = 'block';
+        
+        const logoutBtn = document.getElementById('logoutButtonHeader');
+        if (logoutBtn) {
+          logoutBtn.onclick = logout;
+        }
+        
+        initAppAfterAuth();
+      } else {
+        // Сессия невалидна - показываем экран входа
+        document.getElementById('loginScreen').style.display = 'flex';
+        document.getElementById('mainContent').style.display = 'none';
+        // Если был текущий пользователь - очищаем
+        currentUser = null;
+      }
+    } else {
+      // Нет сохраненной сессии - показываем экран входа
+      document.getElementById('loginScreen').style.display = 'flex';
+      document.getElementById('mainContent').style.display = 'none';
+    }
+  })();
   
   const faLink = document.createElement('link');
   faLink.rel = 'stylesheet';
